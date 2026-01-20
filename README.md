@@ -1,4 +1,4 @@
-# Tarsometatarsus: Ankara vs Nigde - Full ML Pipeline (ASCII ONLY)
+# Tarsometatarsus: Ross vs Cobb - Full ML Pipeline (ASCII ONLY)
 
 This repository contains an end-to-end ML pipeline in R to classify specimens (Ross vs Cobb) using measurements from an Excel file (`data.xlsx`).
 
