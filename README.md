@@ -22,3 +22,13 @@ From the repo root:
 
 ```bash
 Rscript pipeline.R
+
+cff-version: 1.2.0
+message: "If you use this pipeline, please cite it."
+title: "Tarsometatarsus: Ankara vs Nigde - Full ML Pipeline"
+type: software
+authors:
+  - family-names: "Zeybek"
+    given-names: "Mustafa"
+year: 2026
+license: "MIT"
