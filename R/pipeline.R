@@ -5,7 +5,8 @@
 #  - Normalize Turkish characters to ASCII (using Unicode escapes)
 #  - NO PLOTLY: PCA saved as normal PNG (base R + ggplot2)
 #  - BIGGER TEXT in figures
-#  - Within-group outlier detection for PCA
+#  - PCA plots WITHOUT outlier marking
+#  - ALL FIGURES: saved AND also shown on screen
 ############################################################
 
 # -------------------------
@@ -47,11 +48,16 @@ bump_step <- function(msg) {
 }
 
 # -------------------------
-# Helpers: save base plots (with larger text)
+# Helpers: save base plots (SAVE + SHOW)
 # -------------------------
 save_png <- function(filename, expr, width = 2000, height = 1400, res = 150) {
+  # 1) show on screen
+  force(expr)
+  
+  # 2) save to file
   png(file.path(fig_dir, filename), width = width, height = height, res = res)
   on.exit(dev.off(), add = TRUE)
+  
   op <- par(no.readonly = TRUE)
   on.exit(par(op), add = TRUE)
   
@@ -223,6 +229,7 @@ train_control <- caret::trainControl(
   verboseIter = FALSE
 )
 
+# make sure only predictors are used; keep "yon" if it exists
 p <- ncol(train_data) - 2  # exclude spec + id
 mtry_candidates <- unique(pmax(1, round(c(sqrt(p) - 1, sqrt(p), sqrt(p) + 1))))
 tune_grid <- expand.grid(mtry = mtry_candidates)
@@ -307,6 +314,7 @@ cat("\n=== PERFORMANCE TABLE (FULL MODELS) ===\n")
 print(perf_tbl)
 write.csv(perf_tbl, file.path(out_dir, "performance_full_models.csv"), row.names = FALSE)
 
+# ROC/AUC
 positive_class <- levels(test_data$spec)[1]
 roc_rf  <- pROC::roc(response = test_data$spec, predictor = prob_rf[[positive_class]])
 roc_svm <- pROC::roc(response = test_data$spec, predictor = prob_svm[[positive_class]])
@@ -352,6 +360,7 @@ g_varimp <- ggplot(rf_imp_df, aes(x = reorder(variable, Overall), y = Overall)) 
   theme_base_big() +
   labs(title = "RF Variable Importance", x = "Predictor", y = "Importance")
 
+print(g_varimp)
 ggsave(filename = file.path(fig_dir, "rf_variable_importance.png"),
        plot = g_varimp, width = 10, height = 7, dpi = 150)
 
@@ -372,15 +381,19 @@ write.csv(data.frame(best_feats = best_feats),
 save_png("rfe_performance.png", { plot(rfe_res, type = c("g", "o")) })
 
 ############################################################
-# 5. CORRELATION + PCA (PNG) + WITHIN-GROUP OUTLIERS + ROBUST PCA
+# 5. CORRELATION + PCA (PNG) + ROBUST PCA (NO OUTLIERS)
 ############################################################
-bump_step("5) Correlation, PCA (PNG), within-group outliers, robust PCA")
+bump_step("5) Correlation, PCA (PNG), robust PCA (no outliers)")
 
 # Correlation matrix (numeric only, excluding id)
 rm_id <- data[, !(names(data) %in% c("id")), drop = FALSE]
 num_cols_all <- sapply(rm_id, is.numeric)
-corr_matrix <- cor(rm_id[, num_cols_all, drop = FALSE],
-                   use = "pairwise.complete.obs", method = "pearson")
+
+corr_matrix <- cor(
+  rm_id[, num_cols_all, drop = FALSE],
+  use = "pairwise.complete.obs",
+  method = "pearson"
+)
 
 save_png("correlation_matrix_corrplot.png", {
   corrplot::corrplot(
@@ -395,7 +408,6 @@ save_png("correlation_matrix_corrplot.png", {
 features <- names(data)[sapply(data, is.numeric) & !(names(data) %in% c("id"))]
 X <- data[, features, drop = FALSE]
 
-# Global PCA (for visualization)
 pca_res <- prcomp(X, center = TRUE, scale. = TRUE)
 
 scores <- as.data.frame(pca_res$x)
@@ -416,93 +428,17 @@ ve_df <- data.frame(
 )
 write.csv(ve_df, file.path(out_dir, "pca_variance_explained.csv"), row.names = FALSE)
 
-# -------------------------
-# Outlier detection (WITHIN-GROUP) to avoid labeling an entire class as outlier
-# -------------------------
-alpha <- 0.975
-k_max <- 5
-
-detect_outliers_within_group <- function(X_df, spec_factor, alpha = 0.975, k_max = 5) {
-  n <- nrow(X_df)
-  md2_all <- rep(NA_real_, n)
-  spe_all <- rep(NA_real_, n)
-  flag_all <- rep(FALSE, n)
-  
-  for (lvl in levels(spec_factor)) {
-    idx <- which(spec_factor == lvl)
-    Xg <- X_df[idx, , drop = FALSE]
-    n_g <- nrow(Xg)
-    
-    # Need enough rows to do PCA + covariance stably
-    if (n_g < 6) next
-    
-    pca_g <- prcomp(Xg, center = TRUE, scale. = TRUE)
-    k_g <- min(k_max, ncol(pca_g$x), n_g - 1)
-    
-    Sg <- pca_g$x[, 1:k_g, drop = FALSE]
-    
-    # Robust MD^2 in score space (fallback if needed)
-    md2_g <- NULL
-    if (n_g >= (k_g + 2)) {
-      cov_g <- rrcov::CovMcd(Sg)
-      md2_g <- mahalanobis(Sg, center = cov_g@center, cov = cov_g@cov)
-    } else {
-      md2_g <- mahalanobis(Sg, center = colMeans(Sg), cov = stats::cov(Sg))
-    }
-    
-    md2_cut <- qchisq(alpha, df = k_g)
-    flag_md <- md2_g > md2_cut
-    
-    # SPE within-group (reconstruction error)
-    Xg_scaled <- scale(Xg, center = pca_g$center, scale = pca_g$scale)
-    scores_k  <- pca_g$x[, 1:k_g, drop = FALSE]
-    rot_k     <- pca_g$rotation[, 1:k_g, drop = FALSE]
-    Xhat_scaled <- scores_k %*% t(rot_k)
-    resid <- Xg_scaled - Xhat_scaled
-    spe_g <- rowSums(resid^2)
-    
-    spe_cut <- as.numeric(quantile(spe_g, probs = alpha, na.rm = TRUE))
-    flag_spe <- spe_g > spe_cut
-    
-    md2_all[idx] <- md2_g
-    spe_all[idx] <- spe_g
-    flag_all[idx] <- (flag_md | flag_spe)
-  }
-  
-  list(md2 = md2_all, spe = spe_all, is_outlier = flag_all)
-}
-
-out_res <- detect_outliers_within_group(X_df = X, spec_factor = data$spec, alpha = alpha, k_max = k_max)
-
-scores$robust_md2 <- out_res$md2
-scores$SPE        <- out_res$spe
-scores$is_outlier <- out_res$is_outlier
-
-# Outlier score (safe for NA)
-z_md2 <- scale(scores$robust_md2)
-z_spe <- scale(scores$SPE)
-z_md2[is.na(z_md2)] <- 0
-z_spe[is.na(z_spe)] <- 0
-scores$outlier_score <- as.numeric(z_md2 + z_spe)
-
-outliers_tbl <- scores[order(-scores$outlier_score),
-                       c("id","spec","robust_md2","SPE","is_outlier","outlier_score")]
-write.csv(outliers_tbl, file.path(out_dir, "pca_outliers_ranked_within_group.csv"), row.names = FALSE)
-
-# Base R PCA plot (PC1 vs PC2) - outliers marked
-save_png("pca_pc1_pc2_baseR_outliers_within_group.png", {
-  x <- scores$PC1
-  y <- scores$PC2
-  pch_vec <- ifelse(scores$is_outlier, 4, 16)
+# Base R PCA plot (PC1 vs PC2)
+save_png("pca_pc1_pc2_baseR.png", {
   cols <- as.integer(scores$spec)
   
   plot(
-    x, y,
-    pch = pch_vec,
+    scores$PC1, scores$PC2,
+    pch = 16,
     col = cols,
     xlab = "PC1",
     ylab = "PC2",
-    main = "PCA: PC1 vs PC2 (Within-group Outliers)"
+    main = "PCA: PC1 vs PC2"
   )
   
   legend(
@@ -513,30 +449,18 @@ save_png("pca_pc1_pc2_baseR_outliers_within_group.png", {
     bty = "n",
     cex = LEGEND_CEX
   )
-  
-  legend(
-    "bottomright",
-    legend = c("Non-outlier", "Outlier"),
-    pch = c(16, 4),
-    bty = "n",
-    cex = LEGEND_CEX
-  )
 })
 
-# ggplot PCA plot + ellipse drawn only on non-outliers
+# ggplot PCA + ellipse
 g_pca <- ggplot(scores, aes(x = PC1, y = PC2, color = spec)) +
-  geom_point(aes(shape = is_outlier), size = 2.8, alpha = 0.9) +
-  stat_ellipse(
-    data = subset(scores, is_outlier == FALSE),
-    level = 0.95,
-    linewidth = 0.9
-  ) +
+  geom_point(size = 2.8, alpha = 0.9) +
+  stat_ellipse(level = 0.95, linewidth = 0.9) +
   theme_base_big() +
-  labs(title = "PCA: PC1 vs PC2 (Ellipse on Non-outliers)", x = "PC1", y = "PC2") +
-  scale_shape_manual(values = c(`FALSE` = 16, `TRUE` = 4))
+  labs(title = "PCA: PC1 vs PC2", x = "PC1", y = "PC2")
 
+print(g_pca)
 ggsave(
-  filename = file.path(fig_dir, "pca_pc1_pc2_ggplot_outliers_within_group.png"),
+  filename = file.path(fig_dir, "pca_pc1_pc2_ggplot.png"),
   plot = g_pca,
   width = 10, height = 7, dpi = 150
 )
@@ -547,13 +471,14 @@ g_scree <- ggplot(ve_df[1:min(10, nrow(ve_df)), ], aes(x = PC, y = Variance)) +
   theme_base_big() +
   labs(title = "PCA Scree Plot (First 10 PCs)", x = "Principal Component", y = "Proportion of Variance")
 
+print(g_scree)
 ggsave(
   filename = file.path(fig_dir, "pca_scree_plot.png"),
   plot = g_scree,
   width = 10, height = 7, dpi = 150
 )
 
-# Robust PCA (Hubert)
+# Robust PCA (Hubert) - plot only
 rpca_res <- rrcov::PcaHubert(X, k = min(5, ncol(X)), scale = TRUE)
 rpca_scores <- as.data.frame(rpca_res@scores)
 rpca_scores$spec <- data$spec
@@ -564,8 +489,12 @@ g_rpca <- ggplot(rpca_scores, aes(x = PC1, y = PC2, color = spec)) +
   theme_base_big() +
   labs(title = "Robust PCA (Hubert): PC1 vs PC2", x = "PC1", y = "PC2")
 
-ggsave(filename = file.path(fig_dir, "robust_pca_hubert_pc1_pc2.png"),
-       plot = g_rpca, width = 10, height = 7, dpi = 150)
+print(g_rpca)
+ggsave(
+  filename = file.path(fig_dir, "robust_pca_hubert_pc1_pc2.png"),
+  plot = g_rpca,
+  width = 10, height = 7, dpi = 150
+)
 
 ############################################################
 # 6. REMOVE HIGH CORRELATION FEATURES AND RETRAIN
@@ -612,6 +541,7 @@ bump_step("7) Model summary, best model, VIF")
 
 perf_tbl_all <- perf_tbl
 
+# Feature-selected models
 train_fs <- train_data %>% dplyr::select(all_of(c(best_feats, "spec", "id")))
 test_fs  <- test_data  %>% dplyr::select(all_of(c(best_feats, "spec", "id")))
 
