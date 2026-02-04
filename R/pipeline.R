@@ -315,28 +315,40 @@ print(perf_tbl)
 write.csv(perf_tbl, file.path(out_dir, "performance_full_models.csv"), row.names = FALSE)
 
 # ROC/AUC
+# ROC/AUC
 positive_class <- levels(test_data$spec)[1]
+
 roc_rf  <- pROC::roc(response = test_data$spec, predictor = prob_rf[[positive_class]])
 roc_svm <- pROC::roc(response = test_data$spec, predictor = prob_svm[[positive_class]])
 roc_glm <- pROC::roc(response = test_data$spec, predictor = prob_glm[[positive_class]])
 
 save_png("roc_curve_comparison.png", {
-  plot(roc_rf,  col = "blue",  main = "ROC Curve Comparison", legacy.axes = TRUE)
-  lines(roc_svm, col = "red")
-  lines(roc_glm, col = "green")
+  plot(
+    roc_rf,
+    col = "blue",
+    lwd = 2,
+    lty = 1,              # solid
+    main = "ROC Curve Comparison",
+    legacy.axes = TRUE
+  )
+  lines(roc_svm, col = "red",   lwd = 2, lty = 2)  # dashed
+  lines(roc_glm, col = "green", lwd = 2, lty = 3)  # dotted
+
   legend(
     "bottomright",
     legend = c(
-      sprintf("RF (AUC=%.3f)",  pROC::auc(roc_rf)),
-      sprintf("SVM (AUC=%.3f)", pROC::auc(roc_svm)),
-      sprintf("GLM (AUC=%.3f)", pROC::auc(roc_glm))
+      sprintf("RF  (AUC = %.3f)", pROC::auc(roc_rf)),
+      sprintf("SVM (AUC = %.3f)", pROC::auc(roc_svm)),
+      sprintf("GLM (AUC = %.3f)", pROC::auc(roc_glm))
     ),
     col = c("blue", "red", "green"),
     lwd = 2,
+    lty = c(1, 2, 3),
     cex = LEGEND_CEX,
     bty = "n"
   )
 })
+
 
 ############################################################
 # 4. FEATURE IMPORTANCE (RF varImp + RFE)
